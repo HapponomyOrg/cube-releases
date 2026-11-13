@@ -40,8 +40,8 @@
 
     # The two minisign public keys: the CI key and the offline backup key. The
     # release job refuses to publish this file while the marker below remains.
-    $CubePubkeyCi = 'CUBE-PUBKEY-PENDING'
-    $CubePubkeyBackup = 'CUBE-PUBKEY-PENDING'
+    $CubePubkeyCi = 'RWR3FugwULgFneOK2w98cIpSzUD9BAFixr5+IDM5NxR9n9bkguhZ0mI1'
+    $CubePubkeyBackup = 'RWQi5Mj6AgIPOzxx3x0ci4Bzn7f5VBgjy8o0ZHOZ4ddLbYqlBln0Q1VV'
 
     $releasesRepo = 'HapponomyOrg/cube-releases'
     $target = 'x86_64-pc-windows-msvc'

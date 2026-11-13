@@ -37,8 +37,8 @@ set -eu
 
 # The two minisign public keys: the CI key and the offline backup key. The
 # release job refuses to publish this file while the marker below remains.
-CUBE_PUBKEY_CI='CUBE-PUBKEY-PENDING'
-CUBE_PUBKEY_BACKUP='CUBE-PUBKEY-PENDING'
+CUBE_PUBKEY_CI='RWR3FugwULgFneOK2w98cIpSzUD9BAFixr5+IDM5NxR9n9bkguhZ0mI1'
+CUBE_PUBKEY_BACKUP='RWQi5Mj6AgIPOzxx3x0ci4Bzn7f5VBgjy8o0ZHOZ4ddLbYqlBln0Q1VV'
 
 CUBE_RELEASES_REPO='HapponomyOrg/cube-releases'
 
