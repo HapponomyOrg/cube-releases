@@ -40,6 +40,6 @@
 [8.340, "o", "- Real fix: point the reference at the file or node that exists, or write the missing target when it should exist\r\n"]
 [8.520, "o", "- Not a fix: emptying the field, pointing it at an unrelated file that exists, or deleting the file that holds the reference\r\n"]
 [8.700, "o", "- Act: none: an ordinary commit\r\n"]
-[8.880, "o", "cube check: writable, cube_format 1; kit starter 0.1.0 (146 of 146 files, 100.00 %)\r\n"]
+[8.880, "o", "cube check: writable, cube_format 1; kit starter 0.1.0 (148 of 148 files, 100.00 %)\r\n"]
 [9.060, "o", "cube check: ran validator (_kit/tools/validator.py): exit 0, 0 finding(s), files seen 10, 152 ms\r\n"]
 [13.060, "o", ""]

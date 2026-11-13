@@ -1,6 +1,6 @@
 # The Cube installer for Windows (sub-spec c01/016 phase 3).
 #
-#   irm https://cube.happonomy.org/install.ps1 | iex
+#   irm https://happonomyorg.github.io/cube-releases/install.ps1 | iex
 #
 # Windows PowerShell 5.1 and PowerShell 7. It installs cube.exe and the
 # cube-*.exe tool binaries of one release channel for your own account.
@@ -23,7 +23,7 @@
 # Environment:
 #   CUBE_CHANNEL       alpha (the default), beta or stable
 #   CUBE_INSTALL_DIR   where the binaries go (default: %LOCALAPPDATA%\Programs\cube)
-#   CUBE_BASE_URL      where the manifests are (default: https://cube.happonomy.org)
+#   CUBE_BASE_URL      where the manifests are (default: $CubeSite below)
 #   CUBE_GITHUB_API    GitHub's REST API (default: https://api.github.com)
 #   CUBE_INSTALL_SKIP_GITHUB_CHECK=1
 #                      skip check 3 (offline, behind a proxy, or past GitHub's
@@ -42,6 +42,12 @@
     # release job refuses to publish this file while the marker below remains.
     $CubePubkeyCi = 'RWR3FugwULgFneOK2w98cIpSzUD9BAFixr5+IDM5NxR9n9bkguhZ0mI1'
     $CubePubkeyBackup = 'RWQi5Mj6AgIPOzxx3x0ci4Bzn7f5VBgjy8o0ZHOZ4ddLbYqlBln0Q1VV'
+
+    # Where the site, the installers and the channel manifests are: GitHub
+    # Pages of cube-releases until https://cube.happonomy.org is live (after
+    # that, GitHub forwards this address there). install.sh names the same
+    # address (CUBE_SITE; docs/custom-domain.md).
+    $CubeSite = 'https://happonomyorg.github.io/cube-releases'
 
     $releasesRepo = 'HapponomyOrg/cube-releases'
     $target = 'x86_64-pc-windows-msvc'
@@ -103,7 +109,7 @@
     }
 
     if ($env:OS -ne 'Windows_NT') {
-        Stop-Install 'install.ps1 is for Windows; on Linux and macOS run: curl -fsSL https://cube.happonomy.org/install.sh | sh'
+        Stop-Install "install.ps1 is for Windows; on Linux and macOS run: curl -fsSL $CubeSite/install.sh | sh"
     }
     $arch = $env:PROCESSOR_ARCHITEW6432
     if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
@@ -130,7 +136,7 @@
         Stop-Install "CUBE_INSTALL_DIR must be a full path such as C:\Tools\cube, not '$dir'"
     }
     $dir = $dir.TrimEnd('\', '/')
-    $base = 'https://cube.happonomy.org'
+    $base = $CubeSite
     if ($env:CUBE_BASE_URL) { $base = $env:CUBE_BASE_URL.TrimEnd('/') }
     $apiBase = 'https://api.github.com'
     if ($env:CUBE_GITHUB_API) { $apiBase = $env:CUBE_GITHUB_API.TrimEnd('/') }

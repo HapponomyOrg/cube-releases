@@ -1,7 +1,7 @@
 #!/bin/sh
 # The Cube installer for Linux and macOS (sub-spec c01/016 phase 3).
 #
-#   curl -fsSL https://cube.happonomy.org/install.sh | sh
+#   curl -fsSL https://happonomyorg.github.io/cube-releases/install.sh | sh
 #
 # It installs cube and the cube-* tool binaries of one release channel for
 # your own account. Nothing is installed unless every check passes:
@@ -23,7 +23,7 @@
 # Environment:
 #   CUBE_CHANNEL       alpha (the default), beta or stable
 #   CUBE_INSTALL_DIR   where the binaries go (default: $HOME/.local/bin)
-#   CUBE_BASE_URL      where the manifests are (default: https://cube.happonomy.org)
+#   CUBE_BASE_URL      where the manifests are (default: CUBE_SITE below)
 #   CUBE_GITHUB_API    GitHub's REST API (default: https://api.github.com)
 #   CUBE_INSTALL_SKIP_GITHUB_CHECK=1
 #                      skip check 3 (offline, behind a proxy, or past GitHub's
@@ -39,6 +39,12 @@ set -eu
 # release job refuses to publish this file while the marker below remains.
 CUBE_PUBKEY_CI='RWR3FugwULgFneOK2w98cIpSzUD9BAFixr5+IDM5NxR9n9bkguhZ0mI1'
 CUBE_PUBKEY_BACKUP='RWQi5Mj6AgIPOzxx3x0ci4Bzn7f5VBgjy8o0ZHOZ4ddLbYqlBln0Q1VV'
+
+# Where the site, the installers and the channel manifests are: GitHub Pages
+# of cube-releases until https://cube.happonomy.org is live (after that,
+# GitHub forwards this address there). install.ps1 names the same address;
+# the site and the release job read it here (docs/custom-domain.md).
+CUBE_SITE='https://happonomyorg.github.io/cube-releases'
 
 CUBE_RELEASES_REPO='HapponomyOrg/cube-releases'
 
@@ -144,7 +150,7 @@ detect_target() {
             fi
             ;;
         MINGW* | MSYS* | CYGWIN* | Windows_NT)
-            die "on Windows, run in PowerShell: irm https://cube.happonomy.org/install.ps1 | iex"
+            die "on Windows, run in PowerShell: irm $CUBE_SITE/install.ps1 | iex"
             ;;
         *)
             die "The Cube has no build for $os $arch; builds exist for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64)"
@@ -395,7 +401,7 @@ main() {
     if [ "$(id -u 2>/dev/null || echo 1)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
         die "run the installer as yourself, without sudo: it installs for your own account"
     fi
-    base=${CUBE_BASE_URL:-https://cube.happonomy.org}
+    base=${CUBE_BASE_URL:-$CUBE_SITE}
     base=${base%/}
 
     check_tools

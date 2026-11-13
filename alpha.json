@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "channel": "alpha",
+  "version": "0.1.0",
+  "tag": "cube-v0.1.0",
+  "serial": 1,
+  "issued": "2026-11-13T18:38:27Z",
+  "expires": "2027-02-11T18:38:27Z",
+  "targets": {
+    "x86_64-unknown-linux-musl": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/cube-x86_64-unknown-linux-musl.tar.gz", "sha256": "9e946419d915d078eb4611252000ab5a472b9be95c37a426d3955524efd28deb", "size": 7708795},
+    "aarch64-unknown-linux-musl": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/cube-aarch64-unknown-linux-musl.tar.gz", "sha256": "07d771362e02547d56a5778fb0fbb7a20c083ca84a588f3dfef9042490df2444", "size": 6957644},
+    "x86_64-apple-darwin": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/cube-x86_64-apple-darwin.tar.gz", "sha256": "40750a3f5f6f00f5380edba04437da9c17802739fc0dbe3ce21546117c2e8880", "size": 7102091},
+    "aarch64-apple-darwin": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/cube-aarch64-apple-darwin.tar.gz", "sha256": "09bf603039cb3760121cdc89545bc80514c6b71c9fced87677aa714d81683da1", "size": 6697305},
+    "x86_64-pc-windows-msvc": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/cube-x86_64-pc-windows-msvc.zip", "sha256": "345015a8a6b74bd539eb9032b3b93c7285fb7bdd5269eb2e47d2ebafd0595495", "size": 7294049}
+  },
+  "kits": {
+    "starter": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/kit-starter-0.1.0.tar.gz", "sha256": "6e5a55da70c23a88375640e08bbebd3719c8ce38e4eff8d36b51933d6267ce2e", "size": 1596559, "version": "0.1.0"},
+    "architecture": {"url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.1.0/pack-architecture-0.1.0.tar.gz", "sha256": "559880bebd299287645864d5c6c434492c8840389d955a6e79c0aab83c1080bb", "size": 206374, "version": "0.1.0"}
+  }
+}
