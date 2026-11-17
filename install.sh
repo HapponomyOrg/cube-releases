@@ -20,9 +20,26 @@
 # On any failure it exits non-zero, removes what it downloaded and leaves no
 # new binary. Success is printed only after the binaries are in place.
 #
+# It numbers its steps ([2/6] checking the signature, and so on) and names
+# the archive and its size before the download (sub-spec c01/032 phase 5).
+# The download shows curl's (or wget's) progress bar only when standard
+# error is a terminal, which it still is under `curl ... | sh`; in a pipe or
+# a log every line is plain text, with no bar and no control characters.
+#
+# Each version goes into a folder of its own (sub-spec c01/032),
+# ${XDG_DATA_HOME:-$HOME/.local/share}/cube/versions/<version>/, with its
+# programs, LICENSE and THIRD-PARTY-NOTICES.md. The commands cube, cube-index
+# and cube-graph in the install folder are links into the current version's
+# folder; one switch of those links makes a version current. No file is
+# written in place: each is written under a new name and renamed. The
+# version that was current before is kept, older ones are removed, and the
+# binaries of a 0.1.0 install (in the install folder itself) become the
+# folder of their version.
+#
 # Environment:
 #   CUBE_CHANNEL       alpha (the default), beta or stable
-#   CUBE_INSTALL_DIR   where the binaries go (default: $HOME/.local/bin)
+#   CUBE_INSTALL_DIR   where the commands go (default: $HOME/.local/bin)
+#   XDG_DATA_HOME      holds cube/versions/ (default: $HOME/.local/share)
 #   CUBE_BASE_URL      where the manifests are (default: CUBE_SITE below)
 #   CUBE_GITHUB_API    GitHub's REST API (default: https://api.github.com)
 #   CUBE_INSTALL_SKIP_GITHUB_CHECK=1
@@ -50,9 +67,16 @@ CUBE_RELEASES_REPO='HapponomyOrg/cube-releases'
 
 STAGE=''
 INSTALL_DIR=''
+VERSIONS=''
+STEPS=6
 
 say() {
     printf 'install.sh: %s\n' "$*"
+}
+
+# step <n> <what>: the start of step n of $STEPS.
+step() {
+    say "[$1/$STEPS] $2"
 }
 
 warn() {
@@ -69,13 +93,14 @@ has() {
 }
 
 cleanup() {
-    if [ -n "$INSTALL_DIR" ]; then
-        for leftover in "$INSTALL_DIR"/.cube-new."$$".*; do
+    for folder in "$INSTALL_DIR" "$VERSIONS"; do
+        [ -n "$folder" ] || continue
+        for leftover in "$folder"/.cube-new."$$".* "$folder"/.cube-old."$$".*; do
             if [ -e "$leftover" ] || [ -L "$leftover" ]; then
-                rm -f -- "$leftover"
+                rm -rf -- "$leftover"
             fi
         done
-    fi
+    done
     case "$STAGE" in
         */.cube-install.*)
             if [ -d "$STAGE" ]; then
@@ -107,8 +132,40 @@ fetch() {
     fi
 }
 
+# The archive: with the downloader's progress bar when standard error is a
+# terminal, silent otherwise (fetch). GNU wget draws only its bar with
+# --show-progress; BusyBox wget has no such option and draws its bar when it
+# is not quiet.
+fetch_archive() {
+    check_url "$1"
+    if [ ! -t 2 ]; then
+        fetch "$1" "$2"
+        return
+    fi
+    if [ "$DOWNLOADER" = curl ]; then
+        case "$1" in
+            https://*) curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL --progress-bar -o "$2" "$1" ;;
+            *) curl -fL --progress-bar -o "$2" "$1" ;;
+        esac
+    elif wget --help 2>&1 | grep -q -e '--show-progress'; then
+        wget -q --show-progress -O "$2" "$1"
+    else
+        wget -O "$2" "$1"
+    fi
+}
+
+# A size in bytes as people read it: 12.3 MB, 45.6 kB or 789 bytes.
+human_size() {
+    LC_ALL=C awk -v b="$1" 'BEGIN {
+        n = b + 0
+        if (n >= 1000000) printf "%.1f MB\n", n / 1000000
+        else if (n >= 1000) printf "%.1f kB\n", n / 1000
+        else printf "%d bytes\n", n
+    }'
+}
+
 check_tools() {
-    for tool in uname id dirname tar mkdir mv rm chmod sed grep awk tail date; do
+    for tool in uname id dirname tar mkdir rmdir mv cp ln readlink rm chmod sed grep awk tail date; do
         has "$tool" || die "this installer needs '$tool', which is not on PATH"
     done
     if has curl; then
@@ -206,15 +263,22 @@ verify_signature() {
     die "the signature of $CHANNEL.json matches neither Happonomy key; nothing was installed"
 }
 
+# A version is also a folder name under versions/: no path separator, and
+# no leading dot (no hidden name, no `..`).
+is_version_name() {
+    case "$1" in
+        '' | .* | *[!0-9A-Za-z.+-]*) return 1 ;;
+    esac
+    return 0
+}
+
 check_manifest() {
     schema=$(manifest_number schema)
     [ "$schema" = 1 ] || die "the manifest is schema $schema; this installer reads schema 1 (download the newest installer)"
     manifest_channel=$(manifest_string channel)
     [ "$manifest_channel" = "$CHANNEL" ] || die "$CHANNEL.json names the channel '$manifest_channel'; nothing was installed"
     VERSION=$(manifest_string version)
-    case "$VERSION" in
-        *[!0-9A-Za-z.+-]*) die "the manifest's version '$VERSION' is not a version" ;;
-    esac
+    is_version_name "$VERSION" || die "the manifest's version '$VERSION' is not a version"
     TAG=$(manifest_string tag)
     case "$TAG" in
         cube-v*) ;;
@@ -237,6 +301,8 @@ check_manifest() {
     line=$(grep "^    \"$TARGET\": {" "$MANIFEST")
     URL=$(printf '%s\n' "$line" | sed -n 's/.*"url": "\([^"]*\)".*/\1/p')
     SHA=$(printf '%s\n' "$line" | sed -n 's/.*"sha256": "\([0-9a-f]*\)".*/\1/p')
+    # The size is shown, never trusted: the SHA-256 vouches for the file.
+    SIZE=$(printf '%s\n' "$line" | sed -n 's/.*"size": \([0-9][0-9]*\).*/\1/p')
     [ -n "$URL" ] || die "the manifest's entry for $TARGET has no url"
     printf '%s\n' "$SHA" | grep -Eq '^[0-9a-f]{64}$' || die "the manifest's entry for $TARGET has no SHA-256"
     check_url "$URL"
@@ -380,6 +446,194 @@ find_payload() {
     die "the archive has no cube binary at its root or in one top folder; nothing was installed"
 }
 
+# The folder of the version folders. A relative XDG_DATA_HOME is ignored,
+# as the XDG Base Directory specification says.
+versions_dir() {
+    data=${XDG_DATA_HOME:-}
+    case "$data" in
+        '' | /*) ;;
+        *)
+            warn "XDG_DATA_HOME is not an absolute path ('$data'), so it is ignored"
+            data=''
+            ;;
+    esac
+    if [ -z "$data" ]; then
+        [ -n "${HOME:-}" ] || die "HOME is not set; set XDG_DATA_HOME to the folder that holds cube/versions"
+        data="$HOME/.local/share"
+    fi
+    VERSIONS="${data%/}/cube/versions"
+}
+
+# The programs in the archive: cube and every cube-* file.
+payload_programs() {
+    NAMES=''
+    for file in "$PAYLOAD/cube" "$PAYLOAD"/cube-*; do
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        name=${file##*/}
+        case "$name" in
+            *[!a-z0-9-]*) continue ;;
+        esac
+        [ ! -L "$file" ] || die "the archive's $name is a link; nothing was installed"
+        [ -f "$file" ] || continue
+        NAMES="$NAMES $name"
+    done
+}
+
+# The version the install folder runs now, in PREVIOUS: the version folder
+# its cube link names or, for a 0.1.0 install (the binaries themselves in the
+# install folder; FLAT=1), the version that cube reports.
+current_state() {
+    PREVIOUS=''
+    FLAT=''
+    if [ -L "$dir/cube" ]; then
+        target=$(readlink "$dir/cube") || target=''
+        case "$target" in
+            "$VERSIONS"/*/cube)
+                version=${target#"$VERSIONS"/}
+                version=${version%/cube}
+                if is_version_name "$version" && [ -d "$VERSIONS/$version" ] && [ ! -L "$VERSIONS/$version" ]; then
+                    PREVIOUS=$version
+                fi
+                ;;
+        esac
+    elif [ -f "$dir/cube" ]; then
+        reported=$("$dir/cube" --version </dev/null 2>/dev/null) || reported=''
+        version=${reported#cube }
+        if [ "$reported" = "cube $version" ] && is_version_name "$version"; then
+            PREVIOUS=$version
+            FLAT=1
+        else
+            warn "$dir/cube reports no version, so it is replaced and not kept"
+        fi
+    fi
+}
+
+# A 0.1.0 install moves into the layout: copies of the binaries this release
+# replaces become the folder of the version they report, written under a new
+# name and renamed. The switch then renames a link over each of them.
+keep_flat_install() {
+    if [ -z "$FLAT" ] || [ "$PREVIOUS" = "$VERSION" ] || [ -e "$VERSIONS/$PREVIOUS" ] || [ -L "$VERSIONS/$PREVIOUS" ]; then
+        return 0
+    fi
+    kept="$VERSIONS/.cube-new.$$.$PREVIOUS"
+    mkdir "$kept" || die "could not create $kept; nothing was installed"
+    chmod 755 "$kept"
+    for name in $NAMES; do
+        if [ -f "$dir/$name" ] && [ ! -L "$dir/$name" ]; then
+            cp "$dir/$name" "$kept/$name" || die "could not copy $dir/$name into $kept; nothing was installed"
+            chmod 755 "$kept/$name"
+        fi
+    done
+    mv "$kept" "$VERSIONS/$PREVIOUS" || die "could not rename $kept to $VERSIONS/$PREVIOUS; nothing was installed"
+    say "moved the cube $PREVIOUS install from $dir into $VERSIONS/$PREVIOUS"
+}
+
+# The new version's files are written into a new folder, which is renamed to
+# versions/<version> in one step. When that folder is there already (the
+# same version again), each file is renamed over its old copy instead.
+place_version() {
+    VERSION_DIR="$VERSIONS/$VERSION"
+    if [ -L "$VERSION_DIR" ] || { [ -e "$VERSION_DIR" ] && [ ! -d "$VERSION_DIR" ]; }; then
+        die "$VERSION_DIR is a link or a file, not a folder; nothing was installed"
+    fi
+    files=$NAMES
+    for name in LICENSE THIRD-PARTY-NOTICES.md; do
+        if [ -f "$PAYLOAD/$name" ] && [ ! -L "$PAYLOAD/$name" ]; then
+            files="$files $name"
+        fi
+    done
+    if [ -d "$VERSION_DIR" ]; then
+        for name in $files; do
+            [ ! -d "$VERSION_DIR/$name" ] || die "$VERSION_DIR/$name is a folder; nothing was installed"
+        done
+    fi
+    new="$VERSIONS/.cube-new.$$.$VERSION"
+    mkdir "$new" || die "could not create $new; nothing was installed"
+    chmod 755 "$new"
+    for name in $files; do
+        case "$name" in
+            cube | cube-*) chmod 755 "$PAYLOAD/$name" ;;
+            *) chmod 644 "$PAYLOAD/$name" ;;
+        esac
+        mv -f "$PAYLOAD/$name" "$new/$name" || die "could not write $name into $new; nothing was installed"
+    done
+    if [ -d "$VERSION_DIR" ]; then
+        for name in $files; do
+            mv -f "$new/$name" "$VERSION_DIR/$name" || die "could not replace $VERSION_DIR/$name"
+        done
+        rmdir "$new" || die "could not remove $new"
+    else
+        mv "$new" "$VERSION_DIR" || die "could not rename $new to $VERSION_DIR; nothing was installed"
+    fi
+}
+
+# Makes the version current: for each program, a new link into the version
+# folder is made under a new name and renamed over the command, which is
+# atomic for a link to a file on Linux and macOS. The cube link goes first,
+# and its rename is the switch: cube runs its tools from beside its
+# resolved path, so its link decides the version, and an install cut short
+# before it leaves the previous version current, tools included (a 0.1.0
+# cube runs only regular files beside it, never a link). The other links
+# name each tool for a direct call.
+switch_links() {
+    for name in $NAMES; do
+        [ ! -d "$dir/$name" ] || die "$dir/$name is a folder, so it cannot become a link to cube $VERSION; nothing was switched"
+    done
+    switch_link cube
+    for name in $NAMES; do
+        [ "$name" = cube ] || switch_link "$name"
+    done
+}
+
+switch_link() {
+    ln -s "$VERSION_DIR/$1" "$dir/.cube-new.$$.$1" || die "could not make a link in $dir"
+    mv -f "$dir/.cube-new.$$.$1" "$dir/$1" || die "could not replace $dir/$1"
+}
+
+# Keeps the new version and the one current before it, and removes every
+# other version folder, each first renamed to a hidden name so that no
+# half-removed folder keeps a version's name. With no previous version known
+# (a fresh install, or a cube link into no version folder here) nothing is
+# removed: another install folder may run them. Then what a killed run of
+# this installer left is removed.
+prune_versions() {
+    if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$VERSION" ]; then
+        for old in "$VERSIONS"/*; do
+            name=${old##*/}
+            if [ ! -d "$old" ] || [ -L "$old" ] || ! is_version_name "$name" ||
+                [ "$name" = "$VERSION" ] || [ "$name" = "$PREVIOUS" ]; then
+                continue
+            fi
+            if mv "$old" "$VERSIONS/.cube-old.$$.$name"; then
+                rm -rf -- "$VERSIONS/.cube-old.$$.$name"
+                say "removed cube $name ($old)"
+            else
+                warn "could not remove $old"
+            fi
+        done
+    fi
+    sweep_stale "$VERSIONS"
+    sweep_stale "$dir"
+    sweep_stale "$parent"
+}
+
+# Removes the .cube-new.<pid>.*, .cube-old.<pid>.* and .cube-install.<pid>.*
+# names in folder $1 whose installer process is gone.
+sweep_stale() {
+    for left in "$1"/.cube-new.* "$1"/.cube-old.* "$1"/.cube-install.*; do
+        [ -e "$left" ] || [ -L "$left" ] || continue
+        pid=${left##*/}
+        pid=${pid#.cube-*.}
+        pid=${pid%%.*}
+        case "$pid" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        if [ "$pid" != "$$" ] && ! kill -0 "$pid" 2>/dev/null; then
+            rm -rf -- "$left"
+        fi
+    done
+}
+
 main() {
     CHANNEL=${CUBE_CHANNEL:-alpha}
     case "$CHANNEL" in
@@ -398,6 +652,7 @@ main() {
     esac
     dir=${dir%/}
     [ -n "$dir" ] || die "CUBE_INSTALL_DIR must not be /"
+    versions_dir
     if [ "$(id -u 2>/dev/null || echo 1)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
         die "run the installer as yourself, without sudo: it installs for your own account"
     fi
@@ -416,24 +671,34 @@ main() {
     INSTALL_DIR=$dir
     parent=$(dirname "$dir")
     # The download is staged next to the install folder, never in the
-    # system temp folder.
+    # system temp folder; its name carries this run's pid, so a later run
+    # removes it when this one was killed (sweep_stale).
     if has mktemp; then
-        STAGE=$(mktemp -d "$parent/.cube-install.XXXXXX") || die "could not create a staging folder in $parent"
+        STAGE=$(mktemp -d "$parent/.cube-install.$$.XXXXXX") || die "could not create a staging folder in $parent"
     else
         STAGE="$parent/.cube-install.$$"
         (umask 077 && mkdir "$STAGE") || die "could not create a staging folder in $parent"
     fi
 
     MANIFEST="$STAGE/$CHANNEL.json"
+    step 1 "downloading the $CHANNEL manifest and its signature"
     fetch "$base/$CHANNEL.json" "$MANIFEST" || die "could not download $base/$CHANNEL.json"
     fetch "$base/$CHANNEL.json.minisig" "$MANIFEST.minisig" || die "could not download $base/$CHANNEL.json.minisig"
+    step 2 "checking the signature"
     verify_signature
     check_manifest
     say "installing cube $VERSION ($CHANNEL channel) for $TARGET into $dir"
+    step 3 "checking GitHub's record of release $TAG"
     check_github_record
 
     archive="$STAGE/$ARCHIVE_NAME"
-    fetch "$URL" "$archive" || die "could not download $URL"
+    if [ -n "$SIZE" ]; then
+        step 4 "downloading $ARCHIVE_NAME ($(human_size "$SIZE"))"
+    else
+        step 4 "downloading $ARCHIVE_NAME (the manifest gives no size)"
+    fi
+    fetch_archive "$URL" "$archive" || die "could not download $URL"
+    step 5 "checking the archive"
     got=$(file_sha256 "$archive")
     [ "$got" = "$SHA" ] || die "the SHA-256 of $ARCHIVE_NAME is $got, the manifest says $SHA; nothing was installed"
     say "the archive's SHA-256 matches the manifest"
@@ -445,28 +710,22 @@ main() {
     reported=$("$PAYLOAD/cube" --version </dev/null 2>/dev/null) || die "the downloaded cube does not run on this machine; nothing was installed"
     [ "$reported" = "cube $VERSION" ] || die "the downloaded cube reports '$reported', the manifest says cube $VERSION; nothing was installed"
 
-    # Every binary is first moved next to its final name, then renamed over
-    # it, so each name holds either the old file or the whole new one.
-    names=''
-    for file in "$PAYLOAD/cube" "$PAYLOAD"/cube-*; do
-        [ -e "$file" ] || [ -L "$file" ] || continue
-        name=${file##*/}
-        case "$name" in
-            *[!a-z0-9-]*) continue ;;
-        esac
-        [ ! -L "$file" ] || die "the archive's $name is a link; nothing was installed"
-        [ -f "$file" ] || continue
-        chmod 755 "$file"
-        mv -f "$file" "$dir/.cube-new.$$.$name" || die "could not write $name into $dir; nothing was installed"
-        names="$names $name"
-    done
-    for name in $names; do
-        mv -f "$dir/.cube-new.$$.$name" "$dir/$name" || die "could not replace $dir/$name"
-    done
+    step 6 "installing cube $VERSION into $VERSIONS/$VERSION"
+    payload_programs
+    current_state
+    mkdir -p "$VERSIONS" || die "could not create $VERSIONS; nothing was installed"
+    keep_flat_install
+    place_version
+    switch_links
+    prune_versions
 
-    say "installed cube $VERSION ($CHANNEL) in $dir:$names"
+    say "installed cube $VERSION ($CHANNEL) in $dir:$NAMES"
+    say "cube $VERSION is in $VERSION_DIR; the commands in $dir are links to it"
+    if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$VERSION" ]; then
+        say "the previous version, cube $PREVIOUS, is kept in $VERSIONS/$PREVIOUS"
+    fi
     tag_page=${URL%/*}
-    say "the licence (LICENSE) and the third-party notices (THIRD-PARTY-NOTICES.md) are in the release archive: ${tag_page%/download/*}/tag/$TAG"
+    say "the licence (LICENSE) and the third-party notices (THIRD-PARTY-NOTICES.md) are in $VERSION_DIR and in the release: ${tag_page%/download/*}/tag/$TAG"
     case ":${PATH:-}:" in
         *":$dir:"*) ;;
         *)

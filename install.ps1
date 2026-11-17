@@ -18,11 +18,28 @@
 #
 # On any failure it stops with an error, removes what it downloaded and
 # leaves no new binary. Success is printed only after the binaries are in
-# place. The install folder is added to your user PATH (after saying so).
+# place.
+#
+# It numbers its steps ([2/6] checking the signature, and so on), each a
+# line of text and a Write-Progress record, and names the archive and its
+# size before the download (sub-spec c01/032 phase 5). Invoke-WebRequest's
+# own progress display stays off: it slows downloads in Windows PowerShell
+# 5.1 many times over.
+#
+# Each version goes into a folder of its own (sub-spec c01/032),
+# <install folder>\versions\<version>\, with its programs, LICENSE and
+# THIRD-PARTY-NOTICES.md. A directory junction <install folder>\current
+# names the current version's folder, and your user PATH names ...\current
+# once (after saying so); a junction needs neither admin rights nor Developer
+# Mode. No file is written in place: each is written under a new name and
+# renamed, and a running cube keeps running from its own version folder. The
+# version that was current before is kept, older ones are removed, and the
+# binaries of a 0.1.0 install (in the install folder itself) become the
+# folder of their version.
 #
 # Environment:
 #   CUBE_CHANNEL       alpha (the default), beta or stable
-#   CUBE_INSTALL_DIR   where the binaries go (default: %LOCALAPPDATA%\Programs\cube)
+#   CUBE_INSTALL_DIR   the install folder (default: %LOCALAPPDATA%\Programs\cube)
 #   CUBE_BASE_URL      where the manifests are (default: $CubeSite below)
 #   CUBE_GITHUB_API    GitHub's REST API (default: https://api.github.com)
 #   CUBE_INSTALL_SKIP_GITHUB_CHECK=1
@@ -51,9 +68,34 @@
 
     $releasesRepo = 'HapponomyOrg/cube-releases'
     $target = 'x86_64-pc-windows-msvc'
+    $stepCount = 6
+    $activity = 'Installing The Cube'
 
     function Write-Step([string]$message) {
         Write-Host "install.ps1: $message"
+    }
+
+    # Step $number of $stepCount: a line of text and a Write-Progress record.
+    # The preference set here holds inside this function only, so
+    # Invoke-WebRequest keeps its own progress display off.
+    function Write-InstallStep([int]$number, [string]$message) {
+        $text = "[$number/$stepCount] $message"
+        Write-Step $text
+        $ProgressPreference = 'Continue'
+        Write-Progress -Activity $activity -Status $text -PercentComplete ([int](($number - 1) * 100 / $stepCount))
+    }
+
+    function Complete-InstallProgress {
+        $ProgressPreference = 'Continue'
+        Write-Progress -Activity $activity -Completed
+    }
+
+    # A size in bytes as people read it: 12.3 MB, 45.6 kB or 789 bytes.
+    function Format-CubeSize([long]$bytes) {
+        $culture = [Globalization.CultureInfo]::InvariantCulture
+        if ($bytes -ge 1000000) { return ($bytes / 1000000).ToString('0.0', $culture) + ' MB' }
+        if ($bytes -ge 1000) { return ($bytes / 1000).ToString('0.0', $culture) + ' kB' }
+        return "$bytes bytes"
     }
 
     function Write-Caution([string]$message) {
@@ -108,6 +150,44 @@
         return $Matches[1]
     }
 
+    # Removes a file or a folder and returns whether it is gone. A junction is
+    # removed itself, never its target's files: [IO.Directory]::Delete without
+    # recursion removes the link only.
+    function Remove-CubePath([string]$path) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if (-not $item) { return $true }
+        try {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                if ($item.PSIsContainer) {
+                    [IO.Directory]::Delete($item.FullName, $false)
+                } else {
+                    [IO.File]::Delete($item.FullName)
+                }
+            } elseif ($item.PSIsContainer) {
+                Remove-Item -LiteralPath $item.FullName -Recurse -Force
+            } else {
+                Remove-Item -LiteralPath $item.FullName -Force
+            }
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    # Removes the .cube-new.<pid>.* and .cube-old.<pid>.* names in $folder
+    # whose installer is gone; a program that still runs stays until the next
+    # install.
+    function Remove-CubeLeftover([string]$folder) {
+        $pattern = '^\.cube-(new|old)\.([0-9]{1,9})\.'
+        foreach ($left in @(Get-ChildItem -LiteralPath $folder -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -cmatch $pattern })) {
+            $null = $left.Name -cmatch $pattern
+            $owner = [int]$Matches[2]
+            if ($owner -ne $PID -and -not (Get-Process -Id $owner -ErrorAction SilentlyContinue)) {
+                $null = Remove-CubePath $left.FullName
+            }
+        }
+    }
+
     if ($env:OS -ne 'Windows_NT') {
         Stop-Install "install.ps1 is for Windows; on Linux and macOS run: curl -fsSL $CubeSite/install.sh | sh"
     }
@@ -136,6 +216,8 @@
         Stop-Install "CUBE_INSTALL_DIR must be a full path such as C:\Tools\cube, not '$dir'"
     }
     $dir = $dir.TrimEnd('\', '/')
+    $versionsDir = Join-Path $dir 'versions'
+    $current = Join-Path $dir 'current'
     $base = $CubeSite
     if ($env:CUBE_BASE_URL) { $base = $env:CUBE_BASE_URL.TrimEnd('/') }
     $apiBase = 'https://api.github.com'
@@ -149,13 +231,15 @@
     # The download is staged next to the install folder, never in %TEMP%.
     $stage = Join-Path $parent ('.cube-install.' + [Guid]::NewGuid().ToString('N').Substring(0, 12))
     $null = New-Item -ItemType Directory -Path $stage
-    $staged = @()
+    $leftovers = @()
     try {
         $manifestPath = Join-Path $stage "$channel.json"
+        Write-InstallStep 1 "downloading the $channel manifest and its signature"
         Get-CubeFile "$base/$channel.json" $manifestPath
         Get-CubeFile "$base/$channel.json.minisig" "$manifestPath.minisig"
 
         # Check 1: the signature, when minisign is installed.
+        Write-InstallStep 2 'checking the signature'
         $minisign = Get-Command minisign -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         $keyShape = '^RW[A-Za-z0-9+/]{54}$'
         if (-not $minisign) {
@@ -185,6 +269,10 @@
             Stop-Install "$channel.json names the channel '$manifestChannel'; nothing was installed"
         }
         $version = Get-ManifestField $lines 'version' '"([0-9A-Za-z.+-]+)"'
+        # The version is also a folder name under versions\: no leading dot.
+        if ($version.StartsWith('.')) {
+            Stop-Install "the manifest's version '$version' is not a version"
+        }
         $tag = Get-ManifestField $lines 'tag' '"(cube-v[0-9A-Za-z.+-]+)"'
         $expires = Get-ManifestField $lines 'expires' '"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"'
         $now = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
@@ -206,6 +294,11 @@
         } else {
             Stop-Install "the manifest's entry for $target has no SHA-256"
         }
+        # The size is shown, never trusted: the SHA-256 vouches for the file.
+        $sizeText = 'the manifest gives no size'
+        if ($targetLines[0] -cmatch '"size": ([0-9]{1,15})[,}]') {
+            $sizeText = Format-CubeSize ([long]$Matches[1])
+        }
         Test-CubeUrl $url
         $archiveName = $url.Substring($url.LastIndexOf('/') + 1)
         if ($archiveName -cnotmatch '^[0-9A-Za-z._+-]+\.zip$') {
@@ -214,6 +307,7 @@
         Write-Step "installing cube $version ($channel channel) for $target into $dir"
 
         # Check 3: GitHub's own record of the release must vouch for the archive.
+        Write-InstallStep 3 "checking GitHub's record of release $tag"
         if ($env:CUBE_INSTALL_SKIP_GITHUB_CHECK -eq '1') {
             Write-Caution "CUBE_INSTALL_SKIP_GITHUB_CHECK=1: GitHub's record of the release is not checked; only the site's manifest vouches for the file"
         } else {
@@ -259,7 +353,9 @@
 
         # Check 4: the archive's SHA-256.
         $archive = Join-Path $stage $archiveName
+        Write-InstallStep 4 "downloading $archiveName ($sizeText)"
         Get-CubeFile $url $archive
+        Write-InstallStep 5 'checking the archive'
         $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
         if ($got -cne $sha) {
             Stop-Install "the SHA-256 of $archiveName is $got, the manifest says $sha; nothing was installed"
@@ -312,79 +408,227 @@
             Stop-Install "the downloaded cube.exe reports '$reported', the manifest says cube $version; nothing was installed"
         }
 
-        # Every binary is first moved next to its final name. An old copy left
-        # by an earlier install must go first, so nothing is swapped while one
-        # is still running.
-        foreach ($binary in $binaries) {
-            $old = Join-Path $dir ($binary.BaseName + '.old.exe')
-            if (Test-Path -LiteralPath $old) {
-                try {
-                    Remove-Item -LiteralPath $old -Force
-                } catch {
-                    Stop-Install "$old is still running; close every cube window and run the installer again; nothing was installed"
+        Write-InstallStep 6 "installing cube $version into $(Join-Path $versionsDir $version)"
+        $names = @($binaries | ForEach-Object { $_.Name })
+        $files = $names
+        foreach ($name in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+            if (Test-Path -LiteralPath (Join-Path $payload $name) -PathType Leaf) { $files += $name }
+        }
+        $versionDir = Join-Path $versionsDir $version
+        $versionItem = Get-Item -LiteralPath $versionDir -Force -ErrorAction SilentlyContinue
+        if ($versionItem -and (-not $versionItem.PSIsContainer -or ($versionItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+            Stop-Install "$versionDir is a link or a file, not a folder; nothing was installed"
+        }
+        $currentItem = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($currentItem -and -not ($currentItem.PSIsContainer -and ($currentItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+            Stop-Install "$current is not a junction; move it away and run the installer again; nothing was installed"
+        }
+
+        # The version current now: the version folder the current junction
+        # names or, for a 0.1.0 install (the binaries in the install folder
+        # itself), the version its cube.exe reports.
+        $previous = $null
+        $flatCube = Join-Path $dir 'cube.exe'
+        $flat = (-not $currentItem) -and (Test-Path -LiteralPath $flatCube -PathType Leaf)
+        if ($currentItem) {
+            $named = ([string]@($currentItem.Target)[0]) -replace '^(\\\\\?\\|\\\?\?\\)', ''
+            if ($named -and (Split-Path -Parent $named).TrimEnd('\') -ieq $versionsDir) {
+                $leaf = Split-Path -Leaf $named
+                if ($leaf -cmatch '^[0-9A-Za-z+-][0-9A-Za-z.+-]*$' -and (Test-Path -LiteralPath (Join-Path $versionsDir $leaf) -PathType Container)) {
+                    $previous = $leaf
                 }
             }
-            $temp = Join-Path $dir ".cube-new.$PID.$($binary.Name)"
-            Move-Item -LiteralPath $binary.FullName -Destination $temp
-            $staged += $temp
-        }
-        # A running cube.exe cannot be overwritten but can be renamed: the
-        # current copy moves aside to <name>.old.exe, then the new one takes
-        # its name.
-        $names = @()
-        foreach ($binary in $binaries) {
-            $final = Join-Path $dir $binary.Name
-            $old = Join-Path $dir ($binary.BaseName + '.old.exe')
-            $temp = Join-Path $dir ".cube-new.$PID.$($binary.Name)"
-            $movedAside = $false
-            if (Test-Path -LiteralPath $final) {
-                Move-Item -LiteralPath $final -Destination $old
-                $movedAside = $true
-            }
+        } elseif ($flat) {
+            $saved = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             try {
-                Move-Item -LiteralPath $temp -Destination $final
+                $flatReported = (& $flatCube --version 2> $null | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { $flatReported = '' }
             } catch {
-                if ($movedAside) { Move-Item -LiteralPath $old -Destination $final }
-                Stop-Install "could not replace ${final}: $($_.Exception.Message)"
+                $flatReported = ''
+            } finally {
+                $ErrorActionPreference = $saved
             }
-            $staged = @($staged | Where-Object { $_ -ne $temp })
-            if ($movedAside) {
-                try { Remove-Item -LiteralPath $old -Force } catch { Write-Step "the old $($binary.Name) is still running; $old goes at the next install" }
+            if ($flatReported -cmatch '^cube ([0-9A-Za-z+-][0-9A-Za-z.+-]*)$') {
+                $previous = $Matches[1]
+            } else {
+                Write-Caution "$flatCube reports no version, so it is replaced and not kept"
             }
-            $names += $binary.Name
         }
+        $null = New-Item -ItemType Directory -Force -Path $versionsDir
+
+        # A 0.1.0 install moves into the layout: copies of its binaries become
+        # the folder of the version they report, written under a new name and
+        # renamed; the binaries themselves go after the switch.
+        if ($flat -and $previous -and $previous -ine $version -and -not (Test-Path -LiteralPath (Join-Path $versionsDir $previous))) {
+            $kept = Join-Path $versionsDir ".cube-new.$PID.$previous"
+            $null = New-Item -ItemType Directory -Path $kept
+            $leftovers += $kept
+            foreach ($name in $names) {
+                $old = Join-Path $dir $name
+                if (Test-Path -LiteralPath $old -PathType Leaf) {
+                    Copy-Item -LiteralPath $old -Destination (Join-Path $kept $name)
+                }
+            }
+            Move-Item -LiteralPath $kept -Destination (Join-Path $versionsDir $previous)
+            $leftovers = @($leftovers | Where-Object { $_ -ne $kept })
+            Write-Step "moved the cube $previous install from $dir into $(Join-Path $versionsDir $previous)"
+        }
+
+        # The new version's files are written into a new folder, which is
+        # renamed to versions\<version> in one step. When that folder is there
+        # already (the same version again), each file is renamed over its
+        # copy instead: a running program's copy is first renamed aside, as
+        # Windows renames a running program but does not replace it.
+        $new = Join-Path $versionsDir ".cube-new.$PID.$version"
+        $null = New-Item -ItemType Directory -Path $new
+        $leftovers += $new
+        foreach ($name in $files) {
+            Move-Item -LiteralPath (Join-Path $payload $name) -Destination (Join-Path $new $name)
+        }
+        if ($versionItem) {
+            foreach ($name in $files) {
+                $final = Join-Path $versionDir $name
+                $aside = Join-Path $versionDir ".cube-old.$PID.$name"
+                $movedAside = $false
+                if (Test-Path -LiteralPath $final) {
+                    Move-Item -LiteralPath $final -Destination $aside
+                    $movedAside = $true
+                }
+                try {
+                    Move-Item -LiteralPath (Join-Path $new $name) -Destination $final
+                } catch {
+                    if ($movedAside) { Move-Item -LiteralPath $aside -Destination $final }
+                    Stop-Install "could not replace ${final}: $($_.Exception.Message)"
+                }
+                if ($movedAside -and -not (Remove-CubePath $aside)) {
+                    Write-Step "the old $name is still running; $aside goes at the next install"
+                }
+            }
+            $null = Remove-CubePath $new
+        } else {
+            Move-Item -LiteralPath $new -Destination $versionDir
+        }
+        $leftovers = @($leftovers | Where-Object { $_ -ne $new })
+
+        # The switch: a new junction under a new name, renamed to current.
+        # Windows renames no folder over another, so an old current is first
+        # renamed aside and removed after (the link only, never the version
+        # folder it names). A cube that runs keeps running from its own
+        # version folder.
+        $newJunction = Join-Path $dir ".cube-new.$PID.current"
+        $null = New-Item -ItemType Junction -Path $newJunction -Value $versionDir
+        $leftovers += $newJunction
+        $oldJunction = $null
+        if ($currentItem) {
+            $oldJunction = Join-Path $dir ".cube-old.$PID.current"
+            Move-Item -LiteralPath $current -Destination $oldJunction
+        }
+        try {
+            Move-Item -LiteralPath $newJunction -Destination $current
+        } catch {
+            if ($oldJunction) { Move-Item -LiteralPath $oldJunction -Destination $current }
+            Stop-Install "could not make $current name cube ${version}: $($_.Exception.Message)"
+        }
+        $leftovers = @($leftovers | Where-Object { $_ -ne $newJunction })
+        if ($oldJunction) { $null = Remove-CubePath $oldJunction }
+
+        # The new version and the one current before it are kept; every other
+        # version folder is first renamed to a hidden name, then removed. With
+        # no previous version known nothing is removed.
+        if ($previous -and $previous -ine $version) {
+            foreach ($old in @(Get-ChildItem -LiteralPath $versionsDir -Directory -Force)) {
+                if ($old.Name -cnotmatch '^[0-9A-Za-z+-][0-9A-Za-z.+-]*$' -or $old.Name -ieq $version -or $old.Name -ieq $previous -or
+                    ($old.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    continue
+                }
+                $gone = Join-Path $versionsDir ".cube-old.$PID.$($old.Name)"
+                try {
+                    Move-Item -LiteralPath $old.FullName -Destination $gone
+                } catch {
+                    Write-Step "cube $($old.Name) is in use, so $($old.FullName) stays until the next install"
+                    continue
+                }
+                $null = Remove-CubePath $gone
+                Write-Step "removed cube $($old.Name) ($($old.FullName))"
+            }
+        }
+        foreach ($folder in @($dir, $versionsDir, $versionDir)) { Remove-CubeLeftover $folder }
     } finally {
-        foreach ($leftover in $staged) {
-            if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Force }
+        Complete-InstallProgress
+        foreach ($leftover in $leftovers) {
+            $null = Remove-CubePath $leftover
         }
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     }
 
     # The user PATH lives in HKCU\Environment as an expandable string; it is
-    # read without expanding %VARIABLES% so they survive the rewrite.
+    # read without expanding %VARIABLES% so they survive the rewrite. It names
+    # ...\current once; the install folder itself, which a 0.1.0 install put
+    # there, gives its place to ...\current.
+    $pathReady = $false
     try {
         $userKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
         try {
             $rawPath = [string]$userKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             $entries = @($rawPath -split ';' | Where-Object { $_ })
-            $present = @($entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -ieq $dir })
-            if ($present.Count -eq 0) {
-                Write-Step "adding $dir to your user PATH (HKCU\Environment, value Path); open a new terminal to use cube"
-                $userKey.SetValue('Path', (($entries + $dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $rewritten = @()
+            $listed = $false
+            $replaced = $false
+            foreach ($entry in $entries) {
+                $expanded = [Environment]::ExpandEnvironmentVariables($entry).TrimEnd('\')
+                if ($expanded -ieq $current -or $expanded -ieq $dir) {
+                    if ($expanded -ieq $dir) { $replaced = $true }
+                    if (-not $listed) {
+                        if ($expanded -ieq $current) { $rewritten += $entry } else { $rewritten += $current }
+                        $listed = $true
+                    }
+                } else {
+                    $rewritten += $entry
+                }
+            }
+            if (-not $listed) { $rewritten += $current }
+            if (($rewritten -join ';') -cne ($entries -join ';')) {
+                if ($replaced) {
+                    Write-Step "your user PATH (HKCU\Environment, value Path) named $dir; it now names $current instead; open a new terminal to use cube"
+                } else {
+                    Write-Step "adding $current to your user PATH (HKCU\Environment, value Path); open a new terminal to use cube"
+                }
+                $userKey.SetValue('Path', ($rewritten -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
                 # Setting and clearing a user variable tells running programs
                 # (Explorer, new terminals) that the environment changed.
                 [Environment]::SetEnvironmentVariable('CUBE_INSTALL_PATH_REFRESH', '1', 'User')
                 [Environment]::SetEnvironmentVariable('CUBE_INSTALL_PATH_REFRESH', $null, 'User')
-                $env:Path = "$env:Path;$dir"
+                $env:Path = "$current;$env:Path"
             }
+            $pathReady = $true
         } finally {
             $userKey.Close()
         }
     } catch {
-        Write-Caution "could not add $dir to your user PATH ($($_.Exception.Message)); add it in Settings, System, About, Advanced system settings, Environment Variables"
+        Write-Caution "could not add $current to your user PATH ($($_.Exception.Message)); add it in Settings, System, About, Advanced system settings, Environment Variables"
+    }
+
+    # The binaries of a 0.1.0 install go once the PATH names ...\current; one
+    # that still runs is renamed aside and goes at the next install.
+    if ($flat -and $pathReady) {
+        foreach ($left in @(Get-ChildItem -LiteralPath $dir -File -Force | Where-Object { $_.Name -cmatch '^cube(-[a-z0-9-]+)?(\.old)?\.exe$' })) {
+            if (-not (Remove-CubePath $left.FullName)) {
+                try {
+                    Move-Item -LiteralPath $left.FullName -Destination (Join-Path $dir ".cube-old.$PID.$($left.Name)")
+                    Write-Step "$($left.FullName) is still running; it goes at the next install"
+                } catch {
+                    Write-Caution "could not remove $($left.FullName) ($($_.Exception.Message)); remove it when no cube runs"
+                }
+            }
+        }
     }
 
     Write-Step "installed cube $version ($channel) in ${dir}: $($names -join ' ')"
+    Write-Step "cube $version is in $versionDir; the junction $current names it"
+    if ($previous -and $previous -ine $version) {
+        Write-Step "the previous version, cube $previous, is kept in $(Join-Path $versionsDir $previous)"
+    }
     $tagPage = $url.Substring(0, $url.LastIndexOf('/')) -replace '/download/[^/]+$', "/tag/$tag"
-    Write-Step "the licence (LICENSE) and the third-party notices (THIRD-PARTY-NOTICES.md) are in the release archive: $tagPage"
+    Write-Step "the licence (LICENSE) and the third-party notices (THIRD-PARTY-NOTICES.md) are in $versionDir and in the release: $tagPage"
 }

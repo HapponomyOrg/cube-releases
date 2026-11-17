@@ -15,17 +15,28 @@
 #      .claude/skills/cube/, committed by `cube adopt`) stay;
 #   2. the global git settings `cube setup` writes: cube.path, cube.gitPath,
 #      cube.ghPath, cube.python3Path and cube.allowUserOwned;
-#   3. cube.exe, cube-index.exe and cube-graph.exe in the install folder,
-#      each only when it reports its own name and a version (another program
-#      of the same name stays), the .old.exe copies an update left, what an
-#      interrupted install left (.cube-new.* in the folder, .cube-install.*
-#      beside it), and the folder itself when nothing else is in it;
-#   4. the install folder from your user PATH (HKCU\Environment, value Path,
-#      kept an expandable string, so the other entries' %VARIABLES% survive);
+#   3. the programs (sub-spec c01/032): the directory junction current in
+#      the install folder when it names a folder in versions\ (the switch
+#      install.ps1 makes; it is removed as a link, never by entering the
+#      folder it names; a current that names anything else stays), every
+#      version folder in versions\, the binaries of a 0.1.0 install
+#      (cube.exe, cube-index.exe and cube-graph.exe in the install folder
+#      itself, each only when it reports its own name and a version; another
+#      program of the same name stays) and the .old.exe copies its updates
+#      left, what an interrupted install left (.cube-new.* and .cube-old.* in
+#      the folder and in versions\, .cube-install.* beside it), and the
+#      folder itself when nothing else is in it;
+#   4. the install folder's entries in your user PATH, ...\cube\current and
+#      the install folder itself, which a 0.1.0 install added
+#      (HKCU\Environment, value Path, kept an expandable string, so the other
+#      entries' %VARIABLES% survive);
 #   5. the hook cache, %LOCALAPPDATA%\Happonomy\cube\cache.
 #
+# It never enters a junction or a symbolic link: a link is removed itself or
+# left as it is.
+#
 # Environment:
-#   CUBE_INSTALL_DIR          where the binaries are (default: %LOCALAPPDATA%\Programs\cube)
+#   CUBE_INSTALL_DIR          the install folder (default: %LOCALAPPDATA%\Programs\cube)
 #   CUBE_UNINSTALL_KBS        more knowledge bases to unhook, separated by ;
 #   CUBE_UNINSTALL_FIND       folders to search for hooked knowledge bases, separated by ;
 #   CUBE_UNINSTALL_DRY_RUN=1  print every step and change nothing
@@ -122,18 +133,45 @@
         }
     }
 
-    function Remove-Leftover([string]$path, [string]$why, [bool]$folder) {
+    # Removes a file, a link, or a folder with everything in it. A junction
+    # or a symbolic link is removed itself, never what it names:
+    # [IO.Directory]::Delete without recursion removes the link only, and the
+    # walk never enters a link, so no file outside the folder is touched.
+    function Remove-CubeTree([string]$path) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if (-not $item) { return }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            if ($item.PSIsContainer) {
+                [IO.Directory]::Delete($item.FullName, $false)
+            } else {
+                [IO.File]::Delete($item.FullName)
+            }
+        } elseif ($item.PSIsContainer) {
+            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force)) {
+                Remove-CubeTree $child.FullName
+            }
+            [IO.Directory]::Delete($item.FullName, $false)
+        } else {
+            Remove-Item -LiteralPath $item.FullName -Force
+        }
+    }
+
+    function Remove-Leftover([string]$path, [string]$why) {
         if (Test-Step "remove $path ($why)") {
             try {
-                if ($folder) {
-                    Remove-Item -LiteralPath $path -Recurse -Force
-                } else {
-                    Remove-Item -LiteralPath $path -Force
-                }
+                Remove-CubeTree $path
             } catch {
                 Stop-Uninstall "could not remove $path ($($_.Exception.Message)); close every cube window and run the uninstaller again"
             }
         }
+    }
+
+    function Test-Link($item) {
+        return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    }
+
+    function Test-CubeLeftoverName([string]$name) {
+        return ($name -clike '.cube-new.*' -or $name -clike '.cube-old.*')
     }
 
     if ($env:OS -ne 'Windows_NT') {
@@ -196,7 +234,25 @@
         Stop-Uninstall "CUBE_INSTALL_DIR must be a full path such as C:\Tools\cube, not '$dir'"
     }
     $dir = $dir.TrimEnd('\', '/')
+    $versionsDir = Join-Path $dir 'versions'
+    $current = Join-Path $dir 'current'
+    $versionName = '^[0-9A-Za-z+-][0-9A-Za-z.+-]*$'
     if (Test-Path -LiteralPath $dir -PathType Container) {
+        # The switch first: the junction current, removed as a link when it
+        # names a version folder.
+        $currentItem = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($currentItem -and (Test-Link $currentItem)) {
+            $named = ([string]@($currentItem.Target)[0]) -replace '^(\\\\\?\\|\\\?\?\\)', ''
+            if ($named -and (Split-Path -Parent $named).TrimEnd('\') -ieq $versionsDir -and (Split-Path -Leaf $named) -cmatch $versionName) {
+                Remove-Leftover $current "the junction that makes $named current"
+            } else {
+                $shown = if ($named) { $named } else { 'a target it cannot read' }
+                Write-Caution "$current is a link to $shown, not into The Cube's versions folder $versionsDir; it may be another program's, so it stays"
+            }
+        } elseif ($currentItem) {
+            Write-Caution "$current is not a junction, which the installer never makes; it stays"
+        }
+        # A 0.1.0 install: the binaries in the install folder itself.
         foreach ($name in 'cube', 'cube-index', 'cube-graph') {
             $exe = Join-Path $dir "$name.exe"
             if (Test-Path -LiteralPath $exe -PathType Leaf) {
@@ -211,7 +267,7 @@
                     $ErrorActionPreference = $saved
                 }
                 if ($reported -cmatch ('^' + [regex]::Escape($name) + ' [0-9]')) {
-                    Remove-Leftover $exe $reported $false
+                    Remove-Leftover $exe $reported
                 } else {
                     $shown = if ($reported) { $reported } else { 'nothing' }
                     Write-Caution "$exe does not report '$name <version>' (it reports: $shown); it may be another program, so it stays"
@@ -219,17 +275,41 @@
             }
             $old = Join-Path $dir "$name.old.exe"
             if (Test-Path -LiteralPath $old -PathType Leaf) {
-                Remove-Leftover $old 'left by an update' $false
+                Remove-Leftover $old 'left by an update'
             }
         }
-        foreach ($leftover in @(Get-ChildItem -LiteralPath $dir -Filter '.cube-new.*' -File -Force -ErrorAction SilentlyContinue)) {
-            Remove-Leftover $leftover.FullName 'left by an interrupted install' $false
+        # What an interrupted install left: new and old junctions, and a
+        # running 0.1.0 program renamed aside.
+        foreach ($leftover in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Where-Object { Test-CubeLeftoverName $_.Name })) {
+            Remove-Leftover $leftover.FullName 'left by an interrupted install'
+        }
+        # Every version folder, and what an interrupted install left there.
+        $versionsItem = Get-Item -LiteralPath $versionsDir -Force -ErrorAction SilentlyContinue
+        if ($versionsItem -and (Test-Link $versionsItem)) {
+            Write-Caution "$versionsDir is a link, which the installer never makes; it stays, and so does what it names"
+        } elseif ($versionsItem -and $versionsItem.PSIsContainer) {
+            foreach ($entry in @(Get-ChildItem -LiteralPath $versionsDir -Force)) {
+                if (Test-CubeLeftoverName $entry.Name) {
+                    Remove-Leftover $entry.FullName 'left by an interrupted install'
+                } elseif (Test-Link $entry) {
+                    Write-Caution "$($entry.FullName) is a link, which the installer never makes; it stays"
+                } elseif ($entry.PSIsContainer -and $entry.Name -cmatch $versionName) {
+                    Remove-Leftover $entry.FullName "cube $($entry.Name)"
+                }
+            }
+            if (-not $dryRun) {
+                if (@(Get-ChildItem -LiteralPath $versionsDir -Force).Count -eq 0) {
+                    [IO.Directory]::Delete($versionsDir, $false)
+                } else {
+                    Write-Step "$versionsDir still holds other files, so the folder stays"
+                }
+            }
         }
         $rest = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
         if ($dryRun) {
             Write-Step "would remove the folder $dir when nothing else is left in it"
         } elseif ($rest.Count -eq 0) {
-            Remove-Leftover $dir 'now empty' $true
+            Remove-Leftover $dir 'now empty'
         } else {
             Write-Step "$dir still holds other files, so the folder stays"
         }
@@ -237,21 +317,27 @@
     $parent = Split-Path -Parent $dir
     if ($parent -and (Test-Path -LiteralPath $parent -PathType Container)) {
         foreach ($stage in @(Get-ChildItem -LiteralPath $parent -Filter '.cube-install.*' -Directory -Force -ErrorAction SilentlyContinue)) {
-            Remove-Leftover $stage.FullName 'left by an interrupted install' $true
+            Remove-Leftover $stage.FullName 'left by an interrupted install'
         }
     }
 
-    # 4. The install folder in the user PATH. HKCU\Environment's Path is read
-    # without expanding %VARIABLES% and written back as an expandable string,
-    # as install.ps1 writes it.
+    # 4. The install folder's entries in the user PATH: ...\current, and the
+    # install folder itself, which a 0.1.0 install added. HKCU\Environment's
+    # Path is read without expanding %VARIABLES% and written back as an
+    # expandable string, as install.ps1 writes it.
     try {
         $userKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
         try {
             $rawPath = [string]$userKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             $entries = @($rawPath -split ';' | Where-Object { $_ })
-            $keep = @($entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -ine $dir })
-            if ($keep.Count -ne $entries.Count) {
-                if (Test-Step "remove $dir from your user PATH (HKCU\Environment, value Path)") {
+            $keep = @()
+            $gone = @()
+            foreach ($entry in $entries) {
+                $expanded = [Environment]::ExpandEnvironmentVariables($entry).TrimEnd('\')
+                if ($expanded -ieq $current -or $expanded -ieq $dir) { $gone += $entry } else { $keep += $entry }
+            }
+            if ($gone.Count -gt 0) {
+                if (Test-Step "remove $($gone -join ' and ') from your user PATH (HKCU\Environment, value Path)") {
                     $userKey.SetValue('Path', ($keep -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
                     # Setting and clearing a user variable tells running
                     # programs (Explorer, new terminals) that it changed.
@@ -263,7 +349,7 @@
             $userKey.Close()
         }
     } catch {
-        Write-Caution "could not remove $dir from your user PATH ($($_.Exception.Message)); remove it in Settings, System, About, Advanced system settings, Environment Variables"
+        Write-Caution "could not remove $current from your user PATH ($($_.Exception.Message)); remove it in Settings, System, About, Advanced system settings, Environment Variables"
     }
 
     # 5. The hook cache, then its parent folders when they are empty.
@@ -271,7 +357,7 @@
     $cubeData = Join-Path $happonomy 'cube'
     $cache = Join-Path $cubeData 'cache'
     if (Test-Path -LiteralPath $cache -PathType Container) {
-        Remove-Leftover $cache 'the hook cache' $true
+        Remove-Leftover $cache 'the hook cache'
     }
     if (-not $dryRun) {
         foreach ($folder in $cubeData, $happonomy) {

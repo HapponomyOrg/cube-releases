@@ -18,18 +18,26 @@
 #   2. the global git settings `cube setup` writes: cube.path, cube.gitPath,
 #      cube.ghPath and cube.python3Path, and cube.allowUserOwned (your
 #      opt-in);
-#   3. cube, cube-index and cube-graph in the install folder, each only when
-#      it reports its own name and a version (another program of the same
-#      name stays), and what an interrupted install left: .cube-new.* in the
-#      install folder and .cube-install.* beside it;
+#   3. the commands and the programs (sub-spec c01/032): each command in the
+#      install folder (cube, cube-index, cube-graph, and any other cube-*)
+#      that is a link into The Cube's versions folder, the switch install.sh
+#      makes; a link to anywhere else stays (another program's); every
+#      version folder in ${XDG_DATA_HOME:-~/.local/share}/cube/versions; the
+#      binaries of a 0.1.0 install (cube, cube-index and cube-graph in the
+#      install folder itself), each only when it reports its own name and a
+#      version (another program of the same name stays); and what an
+#      interrupted install left: .cube-new.*, .cube-old.* and .cube-install.*
+#      in the install folder, beside it and in the versions folder;
 #   4. the hook cache: ${XDG_CACHE_HOME:-~/.cache}/cube on Linux,
 #      ~/Library/Caches/org.Happonomy.cube on macOS.
 #
-# --dry-run prints every step and changes nothing. It refuses to run as root
-# through sudo, as the installer does.
+# It never follows a symbolic link: a link is removed itself or left as it
+# is. --dry-run prints every step and changes nothing. It refuses to run as
+# root through sudo, as the installer does.
 #
 # Environment:
-#   CUBE_INSTALL_DIR   where the binaries are (default: $HOME/.local/bin)
+#   CUBE_INSTALL_DIR   where the commands are (default: $HOME/.local/bin)
+#   XDG_DATA_HOME      holds cube/versions/ (default: $HOME/.local/share)
 set -eu
 
 DRY_RUN=0
@@ -66,8 +74,9 @@ usage: uninstall.sh [--dry-run] [--find <folder>]... [<kb>]...
 Removes The Cube from this account: the hooks `cube setup` turned on in the
 knowledge bases it is pointed at (the git repository it runs in, each <kb>,
 each repository under a --find folder), the global git settings cube setup
-wrote, cube, cube-index and cube-graph, and the hook cache. The files of a
-knowledge base stay. --dry-run changes nothing.
+wrote, the commands cube, cube-index and cube-graph, every installed version
+and the hook cache. The files of a knowledge base stay. --dry-run changes
+nothing.
 EOF
 }
 
@@ -122,6 +131,56 @@ unhook() {
     fi
 }
 
+# A version folder's name, as install.sh writes it: no path separator and no
+# leading dot.
+is_version_name() {
+    case "$1" in
+        '' | .* | *[!0-9A-Za-z.+-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# The folder of the version folders, read as install.sh reads it: a relative
+# XDG_DATA_HOME is ignored, as the XDG Base Directory specification says.
+versions_dir() {
+    data=${XDG_DATA_HOME:-}
+    case "$data" in
+        /*) ;;
+        *) data="$HOME/.local/share" ;;
+    esac
+    VERSIONS="${data%/}/cube/versions"
+}
+
+# into_versions <target>: whether a link's target is a file in one of The
+# Cube's version folders, <versions>/<version>/<program>, as install.sh
+# writes its links.
+into_versions() {
+    case "$1" in
+        "$VERSIONS"/*/*) ;;
+        *) return 1 ;;
+    esac
+    rest=${1#"$VERSIONS"/}
+    version=${rest%%/*}
+    program=${rest#*/}
+    case "$program" in
+        '' | */*) return 1 ;;
+    esac
+    is_version_name "$version"
+}
+
+# remove_leftovers <folder>: what an interrupted install left in <folder>,
+# its names starting .cube-new., .cube-old. or .cube-install. A link is
+# removed itself, never what it points to.
+remove_leftovers() {
+    for left in "$1"/.cube-new.* "$1"/.cube-old.* "$1"/.cube-install.*; do
+        if [ -L "$left" ] || [ -f "$left" ]; then
+            act "remove $left (left by an interrupted install)" rm -f -- "$left"
+        elif [ -d "$left" ]; then
+            act "remove $left (left by an interrupted install)" rm -rf -- "$left"
+        fi
+    done
+}
+
 # Everything runs from main, called on the last line, so a download cut
 # short runs nothing.
 main() {
@@ -148,7 +207,7 @@ main() {
         die "run the uninstaller as yourself, without sudo: The Cube is installed for your own account"
     fi
     [ -n "${HOME:-}" ] || die "HOME is not set"
-    for tool in id dirname uname rm find; do
+    for tool in id dirname uname rm rmdir readlink find; do
         has "$tool" || die "this uninstaller needs '$tool', which is not on PATH"
     done
     if [ "$DRY_RUN" = 1 ]; then
@@ -207,7 +266,8 @@ EOF
         fi
     fi
 
-    # 3. The binaries and what an interrupted install left.
+    # 3. The commands, the version folders, a 0.1.0 install and what an
+    # interrupted install left.
     dir=${CUBE_INSTALL_DIR:-$HOME/.local/bin}
     case "$dir" in
         /*) ;;
@@ -217,12 +277,29 @@ EOF
         dir=${dir%/}
     done
     [ "$dir" != / ] || die "CUBE_INSTALL_DIR must not be /"
-    for name in cube cube-index cube-graph; do
-        file="$dir/$name"
+    versions_dir
+    # The commands first, so none is left pointing at a removed folder: a
+    # link into the versions folder is the switch install.sh made; the
+    # binaries themselves in the install folder are a 0.1.0 install.
+    for file in "$dir"/cube "$dir"/cube-*; do
+        name=${file##*/}
         if [ -L "$file" ]; then
-            warn "$file is a symbolic link, which the installer never writes; it stays"
+            target=$(readlink "$file") || target=''
+            if into_versions "$target"; then
+                act "remove the command $file (a link to $target)" rm -f -- "$file"
+            else
+                case "$name" in
+                    cube | cube-index | cube-graph)
+                        warn "$file is a link to ${target:-a target it cannot read}, not into The Cube's versions folder $VERSIONS; it may be another program's, so it stays"
+                        ;;
+                esac
+            fi
             continue
         fi
+        case "$name" in
+            cube | cube-index | cube-graph) ;;
+            *) continue ;;
+        esac
         [ -f "$file" ] || continue
         reported=$("$file" --version 2>/dev/null | head -n 1) || reported=''
         case "$reported" in
@@ -230,17 +307,30 @@ EOF
             *) warn "$file does not report '$name <version>' (it reports: ${reported:-nothing}); it may be another program, so it stays" ;;
         esac
     done
-    for leftover in "$dir"/.cube-new.*; do
-        if [ -f "$leftover" ] && [ ! -L "$leftover" ]; then
-            act "remove $leftover (left by an interrupted install)" rm -f -- "$leftover"
-        fi
-    done
+    remove_leftovers "$dir"
     parent=$(dirname "$dir")
-    for stage in "$parent"/.cube-install.*; do
-        if [ -d "$stage" ] && [ ! -L "$stage" ]; then
-            act "remove $stage (left by an interrupted install)" rm -rf -- "$stage"
+    remove_leftovers "$parent"
+    holder=$(dirname "$VERSIONS")
+    if [ -L "$holder" ]; then
+        warn "$holder is a symbolic link, which the installer never makes; it stays, and so does what it points to"
+    elif [ -L "$VERSIONS" ]; then
+        warn "$VERSIONS is a symbolic link, which the installer never makes; it stays, and so does what it points to"
+    elif [ -d "$VERSIONS" ]; then
+        for version in "$VERSIONS"/*; do
+            if [ -L "$version" ]; then
+                warn "$version is a symbolic link, which the installer never makes; it stays"
+            elif [ -d "$version" ] && is_version_name "${version##*/}"; then
+                act "remove cube ${version##*/} ($version)" rm -rf -- "$version"
+            fi
+        done
+        remove_leftovers "$VERSIONS"
+        if [ "$DRY_RUN" = 0 ]; then
+            rmdir "$VERSIONS" 2>/dev/null || say "$VERSIONS still holds other files, so the folder stays"
+            if [ ! -e "$VERSIONS" ]; then
+                rmdir "$holder" 2>/dev/null || true
+            fi
         fi
-    done
+    fi
 
     # 4. The hook cache.
     if [ "$(uname -s)" = Darwin ]; then
