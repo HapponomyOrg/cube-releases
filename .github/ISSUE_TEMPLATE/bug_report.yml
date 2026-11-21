@@ -1,0 +1,85 @@
+# The release workflow of The Cube (release.yml) publishes this file: it
+# copies the folder release/repo/ of the source repository to the default
+# branch of HapponomyOrg/cube-releases. Change the file there. A change made
+# only in cube-releases is lost at the next release.
+name: Bug report
+description: Something in The Cube does not work as its docs say.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report.
+
+        - **A security vulnerability** does not go here. Report it privately: see the [security policy](https://github.com/HapponomyOrg/cube-releases/security/policy).
+        - Read the [known limits](https://happonomyorg.github.io/cube-releases/alpha/known-limits/) first. A limit that is listed there is already known.
+        - Do not paste private content from your knowledge base. The output of `cube doctor` shows paths on your machine: replace any part that you want to keep private.
+  - type: input
+    id: version
+    attributes:
+      label: cube --version
+      description: The output of `cube --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      description: The system that runs The Cube.
+      multiple: false
+      options:
+        - "Linux, x86_64"
+        - "Linux, arm64"
+        - "macOS, Apple silicon"
+        - "macOS, Intel"
+        - "Windows, x86_64"
+        - "Other (say which in the details)"
+    validations:
+      required: true
+  - type: input
+    id: system-version
+    attributes:
+      label: System version
+      description: The name and version of your system.
+      placeholder: "For example: Ubuntu 24.04, macOS 15.5 or Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: cube doctor
+      description: The output of `cube doctor`, run in your knowledge base's folder. Paste what it prints, also when it fails or refuses.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: The commands you ran or the keys you pressed, in order.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include the exact message or output that cube printed.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Other details
+      description: Anything else that helps, for example the kit and the packs of your knowledge base, the coding agent or the terminal.
+    validations:
+      required: false

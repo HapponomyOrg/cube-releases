@@ -1,0 +1,13 @@
+# The release workflow of The Cube (release.yml) publishes this file: it
+# copies the folder release/repo/ of the source repository to the default
+# branch of HapponomyOrg/cube-releases. Change the file there. A change made
+# only in cube-releases is lost at the next release.
+#
+# Only the three forms beside this file: a bug report, a feature request and
+# a question. A security vulnerability goes to the security policy, which
+# sends it to GitHub's private vulnerability reporting.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/HapponomyOrg/cube-releases/security/policy
+    about: Never in a public issue. Read the security policy, then report the vulnerability privately.

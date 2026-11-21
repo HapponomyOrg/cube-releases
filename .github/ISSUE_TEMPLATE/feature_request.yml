@@ -1,0 +1,51 @@
+# The release workflow of The Cube (release.yml) publishes this file: it
+# copies the folder release/repo/ of the source repository to the default
+# branch of HapponomyOrg/cube-releases. Change the file there. A change made
+# only in cube-releases is lost at the next release.
+name: Feature request
+description: Ask for something that The Cube does not do yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the idea.
+
+        - **A security vulnerability** does not go here. Report it privately: see the [security policy](https://github.com/HapponomyOrg/cube-releases/security/policy).
+        - Do not paste private content from your knowledge base.
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to do
+      description: The work you want to do, and why The Cube does not let you do it today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How The Cube could do it, if you have an idea.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: cube --version
+      description: The output of `cube --version`, if The Cube is installed.
+    validations:
+      required: false
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      description: The system that you use or want to use The Cube on.
+      multiple: false
+      options:
+        - "Linux, x86_64"
+        - "Linux, arm64"
+        - "macOS, Apple silicon"
+        - "macOS, Intel"
+        - "Windows, x86_64"
+        - "Other (say which above)"
+    validations:
+      required: false
