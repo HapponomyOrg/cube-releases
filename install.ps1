@@ -37,8 +37,19 @@
 # binaries of a 0.1.0 install (in the install folder itself) become the
 # folder of their version.
 #
+# A release may have no build for Windows (Linux first: a Windows build that
+# failed is left out). The installer then installs nothing, stops with an
+# error, and prints the command that installs the newest earlier release
+# with a Windows build, when the manifest names one ("last_builds"), with
+# what that release lacks. It installs that release only when you run that
+# command.
+#
 # Environment:
 #   CUBE_CHANNEL       alpha (the default), beta or stable
+#   CUBE_VERSION       install this version instead of the channel's newest:
+#                      the manifest's own version, or the earlier Windows
+#                      build it names ("last_builds"), checked the same way;
+#                      any other version is refused
 #   CUBE_INSTALL_DIR   the install folder (default: %LOCALAPPDATA%\Programs\cube)
 #   CUBE_BASE_URL      where the manifests are (default: $CubeSite below)
 #   CUBE_GITHUB_API    GitHub's REST API (default: https://api.github.com)
@@ -204,6 +215,13 @@
     if ($channel -cnotmatch '^(alpha|beta|stable)$') {
         Stop-Install "CUBE_CHANNEL must be alpha, beta or stable, not '$channel'"
     }
+    $pin = ''
+    if ($env:CUBE_VERSION) {
+        $pin = $env:CUBE_VERSION
+        if ($pin -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            Stop-Install "CUBE_VERSION must be a version such as 0.2.0, not '$pin'"
+        }
+    }
     if ($env:CUBE_INSTALL_DIR) {
         $dir = $env:CUBE_INSTALL_DIR
     } else {
@@ -226,6 +244,17 @@
     # Windows PowerShell 5.1 on an older .NET may not offer TLS 1.2 by default.
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
+    # The topmost folder this run makes for the install folder ($null when
+    # the install folder is there): a run that stops before the install
+    # finished removes the folders it made, while they are empty, so a
+    # refusal leaves nothing behind.
+    $made = $null
+    $probe = $dir
+    while ($probe -and -not (Test-Path -LiteralPath $probe)) {
+        $made = $probe
+        $probe = Split-Path -Parent $probe
+    }
+    $installed = $false
     $null = New-Item -ItemType Directory -Force -Path $dir
     $parent = Split-Path -Parent $dir
     # The download is staged next to the install folder, never in %TEMP%.
@@ -280,23 +309,65 @@
         if ([string]::CompareOrdinal($expires, $now) -le 0) {
             Stop-Install "the release manifest for $channel expired on $expires; new installs resume when Happonomy re-signs it; an installed cube keeps working"
         }
+        $newest = $version
         $targetLines = @($lines | Where-Object { $_.StartsWith('    "' + $target + '": {') })
-        if ($targetLines.Count -ne 1) {
-            Stop-Install "the manifest lists no single build for $target"
+        if ($targetLines.Count -gt 1) {
+            Stop-Install "the manifest lists more than one build for $target"
         }
-        if ($targetLines[0] -cmatch '"url": "([^"]+)"') {
+        # The newest earlier release with a Windows build, as the manifest
+        # names it ("last_builds"); a line that never matches a target line.
+        $earlierLines = @($lines | Where-Object { $_.StartsWith('    {"target": "' + $target + '", "version": "') })
+        $earlier = $null
+        if ($earlierLines.Count -eq 1 -and $earlierLines[0] -cmatch '^    \{"target": "[^"]+", "version": "([0-9]+\.[0-9]+\.[0-9]+)", ') {
+            $earlier = $Matches[1]
+        }
+        if ($pin -and $pin -cne $version) {
+            if ($earlier -cne $pin) {
+                $note = ''
+                if ($earlier) { $note = ", and cube $earlier as the newest earlier build for $target" }
+                Stop-Install "CUBE_VERSION=${pin}: the $channel manifest offers cube $version$note, and no build of cube $pin for $target; nothing was installed"
+            }
+            $buildLine = $earlierLines[0]
+            $version = $pin
+            $tag = "cube-v$pin"
+            Write-Step "CUBE_VERSION=${pin}: the $channel channel's newest release, cube $newest, has no build for $target; cube $pin is the newest earlier release with one, older and without fixes since"
+        } elseif ($targetLines.Count -eq 0) {
+            # A release is published once its Linux tests pass; a Windows
+            # build that failed is left out of it, and so out of the manifest.
+            # Refuse, but name the older version (owner, 2026-11-20): the
+            # command that installs it runs only when the user runs it.
+            Write-Step "error: cube $version has no build for Windows (${target}): the release left Windows out, as its build or its tests failed; nothing was installed, and a cube installed before keeps working (release notes: https://github.com/$releasesRepo/releases/tag/$tag)"
+            if ($earlier) {
+                $options = "`$env:CUBE_VERSION = '$earlier'; "
+                if ($channel -cne 'alpha') { $options = "`$env:CUBE_CHANNEL = '$channel'; " + $options }
+                Write-Step "the newest earlier release with a build for Windows is cube $earlier; to install it, run:"
+                Write-Step "  ${options}irm $CubeSite/install.ps1 | iex; Remove-Item Env:CUBE_VERSION"
+                $parts = $earlier.Split('.')
+                if ([int]$parts[0] -eq 0 -and [int]$parts[1] -le 2) {
+                    Write-Step "cube $earlier is older than cube $version and gets no fixes, and it has no cube self update: to update it later, run the installer again"
+                } else {
+                    Write-Step "cube $earlier is older than cube $version and gets no fixes until a release has a build for Windows again"
+                }
+            } else {
+                Write-Step "no earlier release of the $channel channel has a build for Windows ($target) either"
+            }
+            Stop-Install "cube $version has no build for Windows ($target); nothing was installed (the lines above say more)"
+        } else {
+            $buildLine = $targetLines[0]
+        }
+        if ($buildLine -cmatch '"url": "([^"]+)"') {
             $url = $Matches[1]
         } else {
             Stop-Install "the manifest's entry for $target has no url"
         }
-        if ($targetLines[0] -cmatch '"sha256": "([0-9a-f]{64})"') {
+        if ($buildLine -cmatch '"sha256": "([0-9a-f]{64})"') {
             $sha = $Matches[1]
         } else {
             Stop-Install "the manifest's entry for $target has no SHA-256"
         }
         # The size is shown, never trusted: the SHA-256 vouches for the file.
         $sizeText = 'the manifest gives no size'
-        if ($targetLines[0] -cmatch '"size": ([0-9]{1,15})[,}]') {
+        if ($buildLine -cmatch '"size": ([0-9]{1,15})[,}]') {
             $sizeText = Format-CubeSize ([long]$Matches[1])
         }
         Test-CubeUrl $url
@@ -554,12 +625,23 @@
             }
         }
         foreach ($folder in @($dir, $versionsDir, $versionDir)) { Remove-CubeLeftover $folder }
+        $installed = $true
     } finally {
         Complete-InstallProgress
         foreach ($leftover in $leftovers) {
             $null = Remove-CubePath $leftover
         }
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        if (-not $installed -and $made) {
+            # [IO.Directory]::Delete without recursion removes an empty
+            # folder only.
+            $folder = $dir
+            while ($folder) {
+                try { [IO.Directory]::Delete($folder, $false) } catch { break }
+                if ($folder -eq $made) { break }
+                $folder = Split-Path -Parent $folder
+            }
+        }
     }
 
     # The user PATH lives in HKCU\Environment as an expandable string; it is

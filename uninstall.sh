@@ -19,13 +19,14 @@
 #      cube.ghPath and cube.python3Path, and cube.allowUserOwned (your
 #      opt-in);
 #   3. the commands and the programs (sub-spec c01/032): each command in the
-#      install folder (cube, cube-index, cube-graph, and any other cube-*)
-#      that is a link into The Cube's versions folder, the switch install.sh
+#      install folder (cube, its tools cube-index, cube-graph, cube-audit,
+#      cube-archive, cube-ghost and cube-ledger, and any other cube-*) that
+#      is a link into The Cube's versions folder, the switch install.sh
 #      makes; a link to anywhere else stays (another program's); every
 #      version folder in ${XDG_DATA_HOME:-~/.local/share}/cube/versions; the
-#      binaries of a 0.1.0 install (cube, cube-index and cube-graph in the
-#      install folder itself), each only when it reports its own name and a
-#      version (another program of the same name stays); and what an
+#      binaries of an install in the install folder itself (a 0.1.0 install:
+#      cube, cube-index and cube-graph), each only when it reports its own
+#      name and a version (another program of the same name stays); and what an
 #      interrupted install left: .cube-new.*, .cube-old.* and .cube-install.*
 #      in the install folder, beside it and in the versions folder;
 #   4. the hook cache: ${XDG_CACHE_HOME:-~/.cache}/cube on Linux,
@@ -49,6 +50,8 @@ UNHOOKED=0
 CUBE_PATH_SET=0
 NL='
 '
+# The programs The Cube installs: cube and its tools (sub-spec c01/018 phase 6).
+PROGRAMS='cube cube-index cube-graph cube-audit cube-archive cube-ghost cube-ledger'
 
 say() {
     printf 'uninstall.sh: %s\n' "$*"
@@ -74,8 +77,9 @@ usage: uninstall.sh [--dry-run] [--find <folder>]... [<kb>]...
 Removes The Cube from this account: the hooks `cube setup` turned on in the
 knowledge bases it is pointed at (the git repository it runs in, each <kb>,
 each repository under a --find folder), the global git settings cube setup
-wrote, the commands cube, cube-index and cube-graph, every installed version
-and the hook cache. The files of a knowledge base stay. --dry-run changes
+wrote, the commands cube and its tools (cube-index, cube-graph, cube-audit,
+cube-archive, cube-ghost, cube-ledger), every installed version and the hook
+cache. The files of a knowledge base stay. --dry-run changes
 nothing.
 EOF
 }
@@ -129,6 +133,14 @@ unhook() {
     if [ -n "$kept" ]; then
         say "$top keeps $kept: the knowledge base's own committed files; remove them with a commit if you no longer want them"
     fi
+}
+
+# is_program NAME: whether NAME is one of The Cube's programs.
+is_program() {
+    for program in $PROGRAMS; do
+        [ "$1" != "$program" ] || return 0
+    done
+    return 1
 }
 
 # A version folder's name, as install.sh writes it: no path separator and no
@@ -287,19 +299,12 @@ EOF
             target=$(readlink "$file") || target=''
             if into_versions "$target"; then
                 act "remove the command $file (a link to $target)" rm -f -- "$file"
-            else
-                case "$name" in
-                    cube | cube-index | cube-graph)
-                        warn "$file is a link to ${target:-a target it cannot read}, not into The Cube's versions folder $VERSIONS; it may be another program's, so it stays"
-                        ;;
-                esac
+            elif is_program "$name"; then
+                warn "$file is a link to ${target:-a target it cannot read}, not into The Cube's versions folder $VERSIONS; it may be another program's, so it stays"
             fi
             continue
         fi
-        case "$name" in
-            cube | cube-index | cube-graph) ;;
-            *) continue ;;
-        esac
+        is_program "$name" || continue
         [ -f "$file" ] || continue
         reported=$("$file" --version 2>/dev/null | head -n 1) || reported=''
         case "$reported" in

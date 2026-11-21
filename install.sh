@@ -28,16 +28,27 @@
 #
 # Each version goes into a folder of its own (sub-spec c01/032),
 # ${XDG_DATA_HOME:-$HOME/.local/share}/cube/versions/<version>/, with its
-# programs, LICENSE and THIRD-PARTY-NOTICES.md. The commands cube, cube-index
-# and cube-graph in the install folder are links into the current version's
-# folder; one switch of those links makes a version current. No file is
+# programs, LICENSE and THIRD-PARTY-NOTICES.md. The commands in the install
+# folder, cube and each cube-* tool (cube-index, cube-graph, cube-audit,
+# cube-archive, cube-ghost and cube-ledger), are links into the current
+# version's folder; one switch of those links makes a version current. No file is
 # written in place: each is written under a new name and renamed. The
 # version that was current before is kept, older ones are removed, and the
 # binaries of a 0.1.0 install (in the install folder itself) become the
 # folder of their version.
 #
+# A release may have no build for your system (Linux first: a macOS build
+# that failed is left out). The installer then installs nothing, exits 1,
+# and prints the command that installs the newest earlier release with a
+# build for it, when the manifest names one ("last_builds"), with what that
+# release lacks. It installs that release only when you run that command.
+#
 # Environment:
 #   CUBE_CHANNEL       alpha (the default), beta or stable
+#   CUBE_VERSION       install this version instead of the channel's newest:
+#                      the manifest's own version, or the earlier build it
+#                      names for your system ("last_builds"), checked the same
+#                      way; any other version is refused
 #   CUBE_INSTALL_DIR   where the commands go (default: $HOME/.local/bin)
 #   XDG_DATA_HOME      holds cube/versions/ (default: $HOME/.local/share)
 #   CUBE_BASE_URL      where the manifests are (default: CUBE_SITE below)
@@ -69,6 +80,14 @@ STAGE=''
 INSTALL_DIR=''
 VERSIONS=''
 STEPS=6
+# The topmost folder this run made for the install folder (empty when the
+# install folder was there) and whether the install finished: a run that
+# stops removes the folders it made, while they are empty, so a refusal
+# leaves nothing behind.
+MADE=''
+DONE=''
+# CUBE_VERSION, when set.
+PIN=''
 
 say() {
     printf 'install.sh: %s\n' "$*"
@@ -108,6 +127,12 @@ cleanup() {
             fi
             ;;
     esac
+    if [ -z "$DONE" ] && [ -n "$MADE" ] && [ -n "$INSTALL_DIR" ]; then
+        folder=$INSTALL_DIR
+        while rmdir "$folder" 2>/dev/null && [ "$folder" != "$MADE" ]; do
+            folder=$(dirname "$folder")
+        done
+    fi
 }
 
 # Only https:// is fetched; plain http only from this machine (a local test
@@ -296,9 +321,23 @@ check_manifest() {
     if LC_ALL=C awk -v e="$expires" -v n="$now" 'BEGIN { exit !(e "" <= n "") }'; then
         die "the release manifest for $CHANNEL expired on $expires; new installs resume when Happonomy re-signs it; an installed cube keeps working"
     fi
+    NEWEST=$VERSION
     count=$(grep -c "^    \"$TARGET\": {" "$MANIFEST" || true)
-    [ "$count" = 1 ] || die "the manifest lists no single build for $TARGET"
-    line=$(grep "^    \"$TARGET\": {" "$MANIFEST")
+    [ "$count" -le 1 ] || die "the manifest lists more than one build for $TARGET"
+    if [ -n "$PIN" ] && [ "$PIN" != "$VERSION" ]; then
+        # An earlier build, as the manifest names it for this target.
+        line=$(grep "^    {\"target\": \"$TARGET\", \"version\": \"$PIN\", " "$MANIFEST" || true)
+        case "$line" in
+            '' | *'
+'*) die "CUBE_VERSION=$PIN: the $CHANNEL manifest offers cube $VERSION$(earlier_note), and no build of cube $PIN for $TARGET; nothing was installed" ;;
+        esac
+        VERSION=$PIN
+        TAG="cube-v$PIN"
+    elif [ "$count" = 0 ]; then
+        no_build
+    else
+        line=$(grep "^    \"$TARGET\": {" "$MANIFEST")
+    fi
     URL=$(printf '%s\n' "$line" | sed -n 's/.*"url": "\([^"]*\)".*/\1/p')
     SHA=$(printf '%s\n' "$line" | sed -n 's/.*"sha256": "\([0-9a-f]*\)".*/\1/p')
     # The size is shown, never trusted: the SHA-256 vouches for the file.
@@ -314,6 +353,60 @@ check_manifest() {
     case "$ARCHIVE_NAME" in
         *[!0-9A-Za-z._+-]*) die "the archive name '$ARCHIVE_NAME' has unexpected characters" ;;
     esac
+}
+
+# The system $TARGET is a build for, as people name it.
+system_name() {
+    case "$TARGET" in
+        *-apple-darwin) echo macOS ;;
+        *) echo Linux ;;
+    esac
+}
+
+# The newest earlier release with a build for $TARGET that the manifest names
+# ("last_builds"); empty when it names none.
+earlier_build() {
+    found=$(sed -n "s/^    {\"target\": \"$TARGET\", \"version\": \"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\", .*/\1/p" "$MANIFEST")
+    case "$found" in
+        *'
+'*) ;;
+        *) printf '%s\n' "$found" ;;
+    esac
+}
+
+# ", and cube <v> as the newest earlier build for $TARGET", when the manifest
+# names one.
+earlier_note() {
+    found=$(earlier_build)
+    [ -z "$found" ] || printf ', and cube %s as the newest earlier build for %s' "$found" "$TARGET"
+}
+
+# The release has no build for $TARGET (Linux first: its build or tests
+# failed): the error, then, when the manifest names the newest earlier
+# release with a build for it, the command that installs that release and
+# what it lacks; exit 1, nothing written (owner, 2026-11-20: refuse, but name
+# the older version; never a silent fallback).
+no_build() {
+    system=$(system_name)
+    printf 'install.sh: error: %s\n' "cube $VERSION has no build for $system ($TARGET): the release left $system out, as its build or its tests failed; nothing was installed, and a cube installed before keeps working (release notes: https://github.com/$CUBE_RELEASES_REPO/releases/tag/$TAG)" >&2
+    earlier=$(earlier_build)
+    if [ -z "$earlier" ]; then
+        printf 'install.sh: %s\n' "no earlier release of the $CHANNEL channel has a build for $system ($TARGET) either" >&2
+        exit 1
+    fi
+    options="CUBE_VERSION=$earlier"
+    [ "$CHANNEL" = alpha ] || options="CUBE_CHANNEL=$CHANNEL $options"
+    printf 'install.sh: %s\n' "the newest earlier release with a build for $system is cube $earlier; to install it, run:" >&2
+    printf 'install.sh:   %s\n' "curl -fsSL $CUBE_SITE/install.sh | $options sh" >&2
+    major=${earlier%%.*}
+    minor=${earlier#*.}
+    minor=${minor%%.*}
+    if [ "$major" = 0 ] && [ "$minor" -le 2 ]; then
+        printf 'install.sh: %s\n' "cube $earlier is older than cube $VERSION and gets no fixes, and it has no cube self update: to update it later, run the installer again" >&2
+    else
+        printf 'install.sh: %s\n' "cube $earlier is older than cube $VERSION and gets no fixes until a release has a build for $system again" >&2
+    fi
+    exit 1
 }
 
 # Prints "<path>\t<value>" for every scalar of a JSON document on stdin,
@@ -658,6 +751,10 @@ main() {
     fi
     base=${CUBE_BASE_URL:-$CUBE_SITE}
     base=${base%/}
+    PIN=${CUBE_VERSION:-}
+    if [ -n "$PIN" ] && ! printf '%s\n' "$PIN" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        die "CUBE_VERSION must be a version such as 0.2.0, not '$PIN'"
+    fi
 
     check_tools
     detect_target
@@ -667,8 +764,13 @@ main() {
     trap 'exit 143' TERM
     trap 'exit 129' HUP
 
-    mkdir -p "$dir" || die "could not create the install folder $dir"
+    probe=$dir
+    while [ ! -e "$probe" ] && [ ! -L "$probe" ]; do
+        MADE=$probe
+        probe=$(dirname "$probe")
+    done
     INSTALL_DIR=$dir
+    mkdir -p "$dir" || die "could not create the install folder $dir"
     parent=$(dirname "$dir")
     # The download is staged next to the install folder, never in the
     # system temp folder; its name carries this run's pid, so a later run
@@ -687,6 +789,9 @@ main() {
     step 2 "checking the signature"
     verify_signature
     check_manifest
+    if [ "$VERSION" != "$NEWEST" ]; then
+        say "CUBE_VERSION=$VERSION: the $CHANNEL channel's newest release, cube $NEWEST, has no build for $TARGET; cube $VERSION is the newest earlier release with one, older and without fixes since"
+    fi
     say "installing cube $VERSION ($CHANNEL channel) for $TARGET into $dir"
     step 3 "checking GitHub's record of release $TAG"
     check_github_record
@@ -718,6 +823,7 @@ main() {
     place_version
     switch_links
     prune_versions
+    DONE=1
 
     say "installed cube $VERSION ($CHANNEL) in $dir:$NAMES"
     say "cube $VERSION is in $VERSION_DIR; the commands in $dir are links to it"

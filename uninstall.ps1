@@ -19,9 +19,11 @@
 #      the install folder when it names a folder in versions\ (the switch
 #      install.ps1 makes; it is removed as a link, never by entering the
 #      folder it names; a current that names anything else stays), every
-#      version folder in versions\, the binaries of a 0.1.0 install
-#      (cube.exe, cube-index.exe and cube-graph.exe in the install folder
-#      itself, each only when it reports its own name and a version; another
+#      version folder in versions\, the binaries of an install in the
+#      install folder itself (a 0.1.0 install: cube.exe, cube-index.exe and
+#      cube-graph.exe; each of The Cube's programs, cube and its tools
+#      cube-index, cube-graph, cube-audit, cube-archive, cube-ghost and
+#      cube-ledger, only when it reports its own name and a version; another
 #      program of the same name stays) and the .old.exe copies its updates
 #      left, what an interrupted install left (.cube-new.* and .cube-old.* in
 #      the folder and in versions\, .cube-install.* beside it), and the
@@ -252,8 +254,10 @@
         } elseif ($currentItem) {
             Write-Caution "$current is not a junction, which the installer never makes; it stays"
         }
-        # A 0.1.0 install: the binaries in the install folder itself.
-        foreach ($name in 'cube', 'cube-index', 'cube-graph') {
+        # A 0.1.0 install: the binaries in the install folder itself, looked
+        # for under the name of each of The Cube's programs (sub-spec c01/018
+        # phase 6).
+        foreach ($name in 'cube', 'cube-index', 'cube-graph', 'cube-audit', 'cube-archive', 'cube-ghost', 'cube-ledger') {
             $exe = Join-Path $dir "$name.exe"
             if (Test-Path -LiteralPath $exe -PathType Leaf) {
                 $reported = ''

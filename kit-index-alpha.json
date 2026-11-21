@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "channel": "alpha",
+  "serial": 1,
+  "issued": "2026-11-21T07:09:23Z",
+  "expires": "2027-02-19T07:09:23Z",
+  "entries": [
+    {
+      "kind": "kit",
+      "name": "starter",
+      "version": "0.5.0",
+      "url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.5.1/kit-starter-0.5.0.tar.gz",
+      "sha256": "03485222ddedcd2238e3b50647afa2b5213b9a834cbc32d66027f8940472b86f",
+      "size": 1650324,
+      "engine": ">=0.5, <0.6",
+      "signer": "9D05B85030E81677",
+      "yanked": false
+    },
+    {
+      "kind": "pack",
+      "name": "architecture",
+      "version": "0.1.0",
+      "url": "https://github.com/HapponomyOrg/cube-releases/releases/download/cube-v0.5.1/pack-architecture-0.1.0.tar.gz",
+      "sha256": "157d4a1ef7d6499db1f86bcef7f336e5905b6c6378a202b996b22eaf8af1c882",
+      "size": 208934,
+      "signer": "9D05B85030E81677",
+      "yanked": false
+    }
+  ]
+}
